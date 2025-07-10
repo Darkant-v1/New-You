@@ -14,6 +14,11 @@ using System.IO;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.WebHost.ConfigureKestrel(serverOptions =>
+{
+    serverOptions.Limits.MaxRequestBodySize = 104857600; // 100 MB
+});
+
 builder.Services.AddOpenApi();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -41,6 +46,12 @@ builder.Services.AddDbContext<DataContext>(options =>
     options.UseSqlite("Data Source=app.db"));
 
 var app = builder.Build();
+
+app.Use(async (context, next) =>
+{
+    Console.WriteLine($"Request: {context.Request.Method} {context.Request.Path}");
+    await next();
+});
 
 app.UseCors("AllowFrontend");
 
@@ -360,11 +371,16 @@ app.MapPost("/social/{postId}/pin", async (ClaimsPrincipal user, int postId, Dat
 app.MapPost("/social/{postId}/comments", async (HttpRequest request, ClaimsPrincipal user, int postId, DataContext db) =>
 {
     var form = await request.ReadFormAsync();
+    Console.WriteLine($"Form files count: {form.Files.Count}");
+    var file = form.Files["image"];
+    if (file != null)
+        Console.WriteLine($"Received file: {file.FileName}, size: {file.Length}");
+    else
+        Console.WriteLine("No file received in form.");
     var userId = int.Parse(user.FindFirst("UserId")!.Value);
     var content = form["content"].ToString();
     var parentCommentId = form.ContainsKey("parentCommentId") ? int.TryParse(form["parentCommentId"], out var pid) ? pid : (int?)null : null;
     string? imageUrl = null;
-    var file = form.Files["image"];
     if (file != null && file.Length > 0)
     {
         var ext = Path.GetExtension(file.FileName).ToLower();
@@ -392,7 +408,8 @@ app.MapPost("/social/{postId}/comments", async (HttpRequest request, ClaimsPrinc
     db.SocialComments.Add(comment);
     await db.SaveChangesAsync();
     return Results.Ok(comment);
-}).Accepts<IFormFile>("multipart/form-data").RequireAuthorization();
+})
+.RequireAuthorization();
 
 app.MapPut("/social/comments/{commentId}", async (ClaimsPrincipal user, int commentId, SocialComment updated, DataContext db) =>
 {
@@ -425,6 +442,28 @@ app.MapGet("/social/{postId}/comments", async (int postId, DataContext db) =>
         .Include(c => c.Replies)
             .ThenInclude(r => r.User)
         .OrderBy(c => c.Timestamp)
+        .Select(c => new {
+            id = c.Id,
+            content = c.Content,
+            timestamp = c.Timestamp,
+            imageUrl = c.ImageUrl,
+            user = c.User == null ? null : new {
+                id = c.User.Id,
+                username = c.User.Username,
+                avatarUrl = c.User.AvatarUrl
+            },
+            replies = c.Replies.Select(r => new {
+                id = r.Id,
+                content = r.Content,
+                timestamp = r.Timestamp,
+                imageUrl = r.ImageUrl,
+                user = r.User == null ? null : new {
+                    id = r.User.Id,
+                    username = r.User.Username,
+                    avatarUrl = r.User.AvatarUrl
+                }
+            }).ToList()
+        })
         .ToListAsync()));
 
 app.MapGet("/admin/users", async (ClaimsPrincipal user, DataContext db) =>
