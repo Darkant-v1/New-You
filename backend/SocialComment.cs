@@ -7,7 +7,8 @@ public class SocialComment
     public User? User { get; set; }
     public string Content { get; set; } = string.Empty;
     public DateTime Timestamp { get; set; } = DateTime.UtcNow;
-    public int? ParentCommentId { get; set; } // For threading
+    public int? ParentCommentId { get; set; }
     public SocialComment? ParentComment { get; set; }
     public List<SocialComment> Replies { get; set; } = new();
+    public string? ImageUrl { get; set; }
 } 

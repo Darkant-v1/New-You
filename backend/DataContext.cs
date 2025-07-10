@@ -15,7 +15,6 @@ public class DataContext : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
-        // SocialPost relationships
         modelBuilder.Entity<SocialPost>()
             .HasMany(p => p.Comments)
             .WithOne(c => c.Post)
@@ -26,7 +25,6 @@ public class DataContext : DbContext
             .WithOne(l => l.Post)
             .HasForeignKey(l => l.PostId)
             .OnDelete(DeleteBehavior.Cascade);
-        // SocialComment threading
         modelBuilder.Entity<SocialComment>()
             .HasMany(c => c.Replies)
             .WithOne(c => c.ParentComment)

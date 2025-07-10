@@ -11,7 +11,7 @@ public class User
     [Required]
     public string PasswordHash { get; set; } = string.Empty;
     [Required]
-    public string Role { get; set; } = "User"; // or "Admin"
+    public string Role { get; set; } = "User";
     public string FullName { get; set; } = string.Empty;
     public string Address { get; set; } = string.Empty;
     public string ContactNumber { get; set; } = string.Empty;

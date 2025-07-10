@@ -9,11 +9,11 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.AspNetCore.Http;
+using System.IO;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -37,7 +37,6 @@ builder.Services.AddCors(options =>
             .AllowAnyMethod());
 });
 
-// Add EF Core with SQLite
 builder.Services.AddDbContext<DataContext>(options =>
     options.UseSqlite("Data Source=app.db"));
 
@@ -45,7 +44,6 @@ var app = builder.Build();
 
 app.UseCors("AllowFrontend");
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
@@ -56,16 +54,13 @@ var summaries = new[]
     "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
 };
 
-// In-memory storage
 var users = new List<User>();
 var dietPlans = new List<DietPlan>();
 var exercises = new List<Exercise>();
 var socialPosts = new List<SocialPost>();
 
-// Helper: Hash password (for demo, just use plain text)
-string HashPassword(string password) => password; // Replace with real hash in production
+string HashPassword(string password) => password;
 
-// Helper: Generate JWT
 string GenerateJwtToken(User user)
 {
     var claims = new[]
@@ -83,7 +78,6 @@ string GenerateJwtToken(User user)
     return new JwtSecurityTokenHandler().WriteToken(token);
 }
 
-// Register
 app.MapPost("/register", async (User user, DataContext db) =>
 {
     if (await db.Users.AnyAsync(u => u.Username == user.Username))
@@ -94,7 +88,6 @@ app.MapPost("/register", async (User user, DataContext db) =>
     return Results.Ok();
 });
 
-// Login
 app.MapPost("/login", async (User login, DataContext db) =>
 {
     var hash = HashPassword(login.PasswordHash);
@@ -104,7 +97,6 @@ app.MapPost("/login", async (User login, DataContext db) =>
     return Results.Ok(new { token, role = user.Role });
 });
 
-// Authenticated endpoints
 app.MapGet("/me", async (ClaimsPrincipal user, DataContext db) =>
 {
     var username = user.Identity?.Name;
@@ -113,7 +105,6 @@ app.MapGet("/me", async (ClaimsPrincipal user, DataContext db) =>
     return Results.Ok(u);
 }).RequireAuthorization();
 
-// TEMP: Promote current user to Admin
 app.MapPost("/promote-me-admin", async (ClaimsPrincipal user, DataContext db) =>
 {
     var username = user.Identity?.Name;
@@ -124,13 +115,11 @@ app.MapPost("/promote-me-admin", async (ClaimsPrincipal user, DataContext db) =>
     return Results.Ok(new { message = $"{u.Username} promoted to Admin." });
 }).RequireAuthorization();
 
-// PUT /me: Update own profile
 app.MapPut("/me", async (ClaimsPrincipal user, User updated, DataContext db) =>
 {
     var username = user.Identity?.Name;
     var u = await db.Users.FirstOrDefaultAsync(u => u.Username == username);
     if (u == null) return Results.NotFound();
-    // Only allow updating certain fields
     u.FullName = updated.FullName;
     u.Address = updated.Address;
     u.ContactNumber = updated.ContactNumber;
@@ -140,7 +129,6 @@ app.MapPut("/me", async (ClaimsPrincipal user, User updated, DataContext db) =>
     return Results.Ok(u);
 }).RequireAuthorization();
 
-// DietPlan endpoints
 app.MapGet("/dietplan", async (ClaimsPrincipal user, DataContext db) =>
 {
     var userId = int.Parse(user.FindFirst("UserId")!.Value);
@@ -176,7 +164,6 @@ app.MapPut("/dietplan/{userId}", async (ClaimsPrincipal user, int userId, DietPl
     return Results.Forbid();
 }).RequireAuthorization();
 
-// Exercise endpoints
 app.MapGet("/exercises", async (ClaimsPrincipal user, DataContext db) =>
 {
     var userId = int.Parse(user.FindFirst("UserId")!.Value);
@@ -236,7 +223,6 @@ app.MapDelete("/exercises/{userId}/{exerciseId}", async (ClaimsPrincipal user, i
     return Results.Forbid();
 }).RequireAuthorization();
 
-// Social endpoints
 app.MapGet("/social", async (DataContext db) =>
     Results.Ok(await db.SocialPosts
         .Include(p => p.User)
@@ -264,34 +250,75 @@ app.MapGet("/social", async (DataContext db) =>
         })
         .ToListAsync()));
 
-// Create post
-app.MapPost("/social", async (ClaimsPrincipal user, SocialPost post, DataContext db) =>
+app.MapPost("/social", async (HttpRequest request, ClaimsPrincipal user, DataContext db) =>
 {
+    var form = await request.ReadFormAsync();
     var userId = int.Parse(user.FindFirst("UserId")!.Value);
-    post.UserId = userId;
-    post.Timestamp = DateTime.UtcNow;
+    var content = form["content"].ToString();
+    var achievement = form["achievement"].ToString();
+    var tag = form["tag"].ToString();
+    string? imageUrl = null;
+    var file = form.Files["image"];
+    if (file != null && file.Length > 0)
+    {
+        var ext = Path.GetExtension(file.FileName).ToLower();
+        if (ext != ".jpg" && ext != ".jpeg" && ext != ".png")
+            return Results.BadRequest("Only .jpg, .jpeg, .png files are allowed.");
+        var dir = Path.Combine(Directory.GetCurrentDirectory(), "post-images");
+        if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+        var fileName = $"post_{userId}_{Guid.NewGuid().ToString().Substring(0,8)}{ext}";
+        var filePath = Path.Combine(dir, fileName);
+        using (var stream = new FileStream(filePath, FileMode.Create))
+        {
+            await file.CopyToAsync(stream);
+        }
+        imageUrl = $"/post-images/{fileName}";
+    }
+    var post = new SocialPost
+    {
+        UserId = userId,
+        Content = content,
+        Achievement = achievement,
+        Tag = tag,
+        ImageUrl = imageUrl,
+        Timestamp = DateTime.UtcNow
+    };
     db.SocialPosts.Add(post);
     await db.SaveChangesAsync();
     return Results.Ok(post);
-}).RequireAuthorization();
+}).Accepts<IFormFile>("multipart/form-data").RequireAuthorization();
 
-// Edit post
-app.MapPut("/social/{postId}", async (ClaimsPrincipal user, int postId, SocialPost updated, DataContext db) =>
+app.MapPut("/social/{postId}", async (HttpRequest request, ClaimsPrincipal user, int postId, DataContext db) =>
 {
+    var form = await request.ReadFormAsync();
     var userId = int.Parse(user.FindFirst("UserId")!.Value);
     var isAdmin = user.IsInRole("Admin") || user.IsInRole("Trainer");
     var post = await db.SocialPosts.FindAsync(postId);
     if (post == null) return Results.NotFound();
     if (post.UserId != userId && !isAdmin) return Results.Forbid();
-    post.Content = updated.Content;
-    post.Achievement = updated.Achievement;
-    post.ImageUrl = updated.ImageUrl;
-    post.Tag = updated.Tag;
+    post.Content = form["content"].ToString();
+    post.Achievement = form["achievement"].ToString();
+    post.Tag = form["tag"].ToString();
+    var file = form.Files["image"];
+    if (file != null && file.Length > 0)
+    {
+        var ext = Path.GetExtension(file.FileName).ToLower();
+        if (ext != ".jpg" && ext != ".jpeg" && ext != ".png")
+            return Results.BadRequest("Only .jpg, .jpeg, .png files are allowed.");
+        var dir = Path.Combine(Directory.GetCurrentDirectory(), "post-images");
+        if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+        var fileName = $"post_{userId}_{Guid.NewGuid().ToString().Substring(0,8)}{ext}";
+        var filePath = Path.Combine(dir, fileName);
+        using (var stream = new FileStream(filePath, FileMode.Create))
+        {
+            await file.CopyToAsync(stream);
+        }
+        post.ImageUrl = $"/post-images/{fileName}";
+    }
     await db.SaveChangesAsync();
     return Results.Ok(post);
-}).RequireAuthorization();
+}).Accepts<IFormFile>("multipart/form-data").RequireAuthorization();
 
-// Delete post
 app.MapDelete("/social/{postId}", async (ClaimsPrincipal user, int postId, DataContext db) =>
 {
     var userId = int.Parse(user.FindFirst("UserId")!.Value);
@@ -304,14 +331,13 @@ app.MapDelete("/social/{postId}", async (ClaimsPrincipal user, int postId, DataC
     return Results.Ok();
 }).RequireAuthorization();
 
-// Like/unlike post
 app.MapPost("/social/{postId}/like", async (ClaimsPrincipal user, int postId, DataContext db) =>
 {
     var userId = int.Parse(user.FindFirst("UserId")!.Value);
     var like = await db.SocialLikes.FirstOrDefaultAsync(l => l.PostId == postId && l.UserId == userId);
     if (like != null)
     {
-        db.SocialLikes.Remove(like); // Unlike
+        db.SocialLikes.Remove(like);
     }
     else
     {
@@ -321,7 +347,6 @@ app.MapPost("/social/{postId}/like", async (ClaimsPrincipal user, int postId, Da
     return Results.Ok();
 }).RequireAuthorization();
 
-// Pin/unpin post (admin only)
 app.MapPost("/social/{postId}/pin", async (ClaimsPrincipal user, int postId, DataContext db) =>
 {
     if (!user.IsInRole("Admin") && !user.IsInRole("Trainer")) return Results.Forbid();
@@ -332,19 +357,43 @@ app.MapPost("/social/{postId}/pin", async (ClaimsPrincipal user, int postId, Dat
     return Results.Ok(post);
 }).RequireAuthorization();
 
-// Add comment
-app.MapPost("/social/{postId}/comments", async (ClaimsPrincipal user, int postId, SocialComment comment, DataContext db) =>
+app.MapPost("/social/{postId}/comments", async (HttpRequest request, ClaimsPrincipal user, int postId, DataContext db) =>
 {
+    var form = await request.ReadFormAsync();
     var userId = int.Parse(user.FindFirst("UserId")!.Value);
-    comment.UserId = userId;
-    comment.PostId = postId;
-    comment.Timestamp = DateTime.UtcNow;
+    var content = form["content"].ToString();
+    var parentCommentId = form.ContainsKey("parentCommentId") ? int.TryParse(form["parentCommentId"], out var pid) ? pid : (int?)null : null;
+    string? imageUrl = null;
+    var file = form.Files["image"];
+    if (file != null && file.Length > 0)
+    {
+        var ext = Path.GetExtension(file.FileName).ToLower();
+        if (ext != ".jpg" && ext != ".jpeg" && ext != ".png")
+            return Results.BadRequest("Only .jpg, .jpeg, .png files are allowed.");
+        var dir = Path.Combine(Directory.GetCurrentDirectory(), "comment-images");
+        if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+        var fileName = $"comment_{userId}_{Guid.NewGuid().ToString().Substring(0,8)}{ext}";
+        var filePath = Path.Combine(dir, fileName);
+        using (var stream = new FileStream(filePath, FileMode.Create))
+        {
+            await file.CopyToAsync(stream);
+        }
+        imageUrl = $"/comment-images/{fileName}";
+    }
+    var comment = new SocialComment
+    {
+        UserId = userId,
+        PostId = postId,
+        Content = content,
+        Timestamp = DateTime.UtcNow,
+        ParentCommentId = parentCommentId,
+        ImageUrl = imageUrl
+    };
     db.SocialComments.Add(comment);
     await db.SaveChangesAsync();
     return Results.Ok(comment);
-}).RequireAuthorization();
+}).Accepts<IFormFile>("multipart/form-data").RequireAuthorization();
 
-// Edit comment
 app.MapPut("/social/comments/{commentId}", async (ClaimsPrincipal user, int commentId, SocialComment updated, DataContext db) =>
 {
     var userId = int.Parse(user.FindFirst("UserId")!.Value);
@@ -357,7 +406,6 @@ app.MapPut("/social/comments/{commentId}", async (ClaimsPrincipal user, int comm
     return Results.Ok(comment);
 }).RequireAuthorization();
 
-// Delete comment
 app.MapDelete("/social/comments/{commentId}", async (ClaimsPrincipal user, int commentId, DataContext db) =>
 {
     var userId = int.Parse(user.FindFirst("UserId")!.Value);
@@ -370,7 +418,6 @@ app.MapDelete("/social/comments/{commentId}", async (ClaimsPrincipal user, int c
     return Results.Ok();
 }).RequireAuthorization();
 
-// Get comments for a post
 app.MapGet("/social/{postId}/comments", async (int postId, DataContext db) =>
     Results.Ok(await db.SocialComments
         .Where(c => c.PostId == postId && c.ParentCommentId == null)
@@ -380,7 +427,6 @@ app.MapGet("/social/{postId}/comments", async (int postId, DataContext db) =>
         .OrderBy(c => c.Timestamp)
         .ToListAsync()));
 
-// Admin endpoints
 app.MapGet("/admin/users", async (ClaimsPrincipal user, DataContext db) =>
 {
     if (!user.IsInRole("Admin")) return Results.Forbid();
@@ -467,7 +513,6 @@ app.MapDelete("/admin/exercises/{userId}/{exerciseId}", async (ClaimsPrincipal u
     return Results.Ok();
 }).RequireAuthorization();
 
-// Messaging endpoints
 app.MapPost("/messages", async (ClaimsPrincipal user, Message message, DataContext db) =>
 {
     var senderId = int.Parse(user.FindFirst("UserId")!.Value);
@@ -478,7 +523,6 @@ app.MapPost("/messages", async (ClaimsPrincipal user, Message message, DataConte
     return Results.Ok(message);
 }).RequireAuthorization();
 
-// Get conversation between authenticated user and another user
 app.MapGet("/messages/{otherUserId}", async (ClaimsPrincipal user, int otherUserId, DataContext db) =>
 {
     var userId = int.Parse(user.FindFirst("UserId")!.Value);
@@ -489,7 +533,6 @@ app.MapGet("/messages/{otherUserId}", async (ClaimsPrincipal user, int otherUser
     return Results.Ok(messages);
 }).RequireAuthorization();
 
-// List all conversations for the authenticated user
 app.MapGet("/messages", async (ClaimsPrincipal user, DataContext db) =>
 {
     var userId = int.Parse(user.FindFirst("UserId")!.Value);
@@ -504,7 +547,6 @@ app.MapGet("/messages", async (ClaimsPrincipal user, DataContext db) =>
     return Results.Ok(conversations);
 }).RequireAuthorization();
 
-// Add after /me endpoints
 app.MapPost("/me/avatar", async (ClaimsPrincipal user, DataContext db, dynamic body) =>
 {
     var userId = int.Parse(user.FindFirst("UserId")!.Value);
@@ -526,10 +568,19 @@ app.MapPost("/me/avatar", async (ClaimsPrincipal user, DataContext db, dynamic b
     return Results.Ok(new { avatarUrl });
 }).RequireAuthorization();
 
-// Serve avatars statically
 app.UseStaticFiles(new StaticFileOptions {
     FileProvider = new PhysicalFileProvider(Path.Combine(Directory.GetCurrentDirectory(), "avatars")),
     RequestPath = "/avatars"
+});
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(Path.Combine(Directory.GetCurrentDirectory(), "comment-images")),
+    RequestPath = "/comment-images"
+});
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(Path.Combine(Directory.GetCurrentDirectory(), "post-images")),
+    RequestPath = "/post-images"
 });
 
 app.Run();
