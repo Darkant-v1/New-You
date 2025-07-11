@@ -622,6 +622,20 @@ app.UseStaticFiles(new StaticFileOptions
     RequestPath = "/post-images"
 });
 
+// Public user info endpoints for messaging
+app.MapGet("/users", async (DataContext db) =>
+{
+    var users = await db.Users.Select(u => new { u.Id, u.Username, u.Role, u.AvatarUrl }).ToListAsync();
+    return Results.Ok(users);
+}).RequireAuthorization();
+
+app.MapGet("/users/{id}", async (int id, DataContext db) =>
+{
+    var user = await db.Users.FindAsync(id);
+    if (user == null) return Results.NotFound();
+    return Results.Ok(new { user.Id, user.Username, user.Role, user.AvatarUrl });
+}).RequireAuthorization();
+
 app.Run();
 
 record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
