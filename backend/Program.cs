@@ -636,6 +636,45 @@ app.MapGet("/users/{id}", async (int id, DataContext db) =>
     return Results.Ok(new { user.Id, user.Username, user.Role, user.AvatarUrl });
 }).RequireAuthorization();
 
+// Add DietLog endpoints
+app.MapPost("/dietlog", async (ClaimsPrincipal user, DietLog log, DataContext db) =>
+{
+    var userId = int.Parse(user.FindFirst("UserId")!.Value);
+    log.UserId = userId;
+    log.Date = log.Date.Date;
+    db.DietLogs.Add(log);
+    await db.SaveChangesAsync();
+    return Results.Ok(log);
+}).RequireAuthorization();
+
+app.MapGet("/dietlog/weekly", async (ClaimsPrincipal user, DataContext db) =>
+{
+    var userId = int.Parse(user.FindFirst("UserId")!.Value);
+    var today = DateTime.UtcNow.Date;
+    var weekStart = today.AddDays(-(int)today.DayOfWeek); // Sunday as start
+    var weekEnd = weekStart.AddDays(7);
+    var logs = await db.DietLogs
+        .Where(l => l.UserId == userId && l.Date >= weekStart && l.Date < weekEnd)
+        .OrderBy(l => l.Date)
+        .ToListAsync();
+    var total = logs.Sum(l => l.Calories);
+    return Results.Ok(new { logs, total });
+}).RequireAuthorization();
+
+app.MapGet("/admin/dietlog/weekly/{userId}", async (ClaimsPrincipal user, int userId, DataContext db) =>
+{
+    if (!user.IsInRole("Admin")) return Results.Forbid();
+    var today = DateTime.UtcNow.Date;
+    var weekStart = today.AddDays(-(int)today.DayOfWeek);
+    var weekEnd = weekStart.AddDays(7);
+    var logs = await db.DietLogs
+        .Where(l => l.UserId == userId && l.Date >= weekStart && l.Date < weekEnd)
+        .OrderBy(l => l.Date)
+        .ToListAsync();
+    var total = logs.Sum(l => l.Calories);
+    return Results.Ok(new { logs, total });
+}).RequireAuthorization();
+
 app.Run();
 
 record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)

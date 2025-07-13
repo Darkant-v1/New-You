@@ -11,6 +11,7 @@ public class DataContext : DbContext
     public DbSet<SocialComment> SocialComments { get; set; }
     public DbSet<SocialLike> SocialLikes { get; set; }
     public DbSet<Message> Messages { get; set; }
+    public DbSet<DietLog> DietLogs { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
